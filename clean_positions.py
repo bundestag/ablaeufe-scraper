@@ -1,14 +1,15 @@
 import re
+import logging
 from hashlib import sha1
 from datetime import datetime
-import logging
 
-import sqlaload as sl
+from common import tbl_position
+
 
 log = logging.getLogger(__name__)
 
 
-def extend_position(engine, table, data):
+def extend_position(data):
     dt, rest = data['fundstelle'].split("-", 1)
     data['date'] = datetime.strptime(dt.strip(), "%d.%m.%Y").isoformat()
     if ',' in data['urheber']:
@@ -23,19 +24,18 @@ def extend_position(engine, table, data):
         data['urheber'] = data['urheber'][len(br):]
 
     data['fundstelle_doc'] = None
-    if data['fundstelle_url'] and \
-            'btp' in data['fundstelle_url']:
+    if data['fundstelle_url'] and 'btp' in data['fundstelle_url']:
         data['fundstelle_doc'] = data['fundstelle_url'].rsplit('#', 1)[0]
 
-    hash = sha1(data['fundstelle'].encode('utf-8') \
-                + data['urheber'].encode('utf-8') + \
-            data['source_url'].encode('utf-8')).hexdigest()
-    data['hash'] = hash[:10]
-    sl.upsert(engine, table, data, unique=['id'])
+    key = sha1()
+    key.update(data['fundstelle'].encode('utf-8'))
+    key.update(data['urheber'].encode('utf-8'))
+    key.update(data['source_url'].encode('utf-8'))
+    data['hash'] = key.hexdigest()[:10]
+    tbl_position.update(data, ['id'])
 
 
 def extend_positions(engine, source_url):
     log.info("Amending positions ...")
-    table = sl.get_table(engine, 'position')
-    for data in sl.find(engine, table, source_url=source_url):
-        extend_position(engine, table, data)
+    for data in tbl_position.find(source_url=source_url):
+        extend_position(data)

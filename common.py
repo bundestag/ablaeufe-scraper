@@ -1,14 +1,20 @@
 # coding: utf-8
 import os
+import logging
 import dataset
 from normality import slugify
 
+
+logging.basicConfig(level=logging.DEBUG)
+requests_log = logging.getLogger("requests")
+requests_log.setLevel(logging.WARNING)
 
 db = os.environ.get('DATABASE_URI', 'sqlite:///data.sqlite')
 engine = dataset.connect(db)
 
 tbl_person = engine['de_bundestag_person']
 tbl_ablauf = engine['de_bundestag_ablauf']
+tbl_schlagwort = engine['de_bundestag_schlagwort']
 tbl_position = engine['de_bundestag_position']
 tbl_beitrag = engine['de_bundestag_beitrag']
 tbl_zuweisung = engine['de_bundestag_zuweisung']

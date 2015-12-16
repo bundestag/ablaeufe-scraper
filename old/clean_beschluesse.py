@@ -4,12 +4,10 @@ from pprint import pprint
 from datetime import datetime
 from collections import defaultdict
 
-import sqlaload as sl
-
-from offenesparlament.core import etl_engine
-from offenesparlament.transform.drs import drucksachen
+# from offenesparlament.transform.drs import drucksachen
 
 log = logging.getLogger(__name__)
+
 
 def cache_abstimmungen(engine):
     Abstimmung = sl.get_table(engine, 'abstimmung')

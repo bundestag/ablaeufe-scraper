@@ -6,11 +6,13 @@ from lxml import etree, html
 from urlparse import urljoin
 
 from common import tbl_ablauf, tbl_beitrag, tbl_position, tbl_beschluss
-from common import tbl_person, tbl_referenz, tbl_zuweisung
+from common import tbl_person, tbl_referenz, tbl_zuweisung, tbl_schlagwort
+
 from constants import FACTION_MAPS, DIP_GREMIUM_TO_KEY
 from constants import DIP_ABLAUF_STATES_FINISHED
 
 
+WAHLPERIODEN = [17, 18]
 EXTRAKT_INDEX = 'http://dipbt.bundestag.de/extrakt/ba/WP%s/'
 INLINE_RE = re.compile(r"<!--(.*?)-->", re.M + re.S)
 INLINE_COMMENTS_RE = re.compile(r"<-.*->", re.M + re.S)
@@ -102,7 +104,7 @@ def dokument_by_name(name):
     return _get_dokument(hrsg, typ, nummer, link=link)
 
 
-def scrape_activity(engine, url, elem):
+def scrape_activity(url, elem):
     urheber = elem.findtext("URHEBER")
     fundstelle = elem.findtext("FUNDSTELLE")
     p = {
@@ -120,7 +122,7 @@ def scrape_activity(engine, url, elem):
         z['text'] = zelem.findtext("AUSSCHUSS_KLARTEXT")
         z['federfuehrung'] = zelem.find("FEDERFUEHRUNG") is not None
         z['gremium_key'] = DIP_GREMIUM_TO_KEY.get(z['text'])
-        sl.add_row(engine, Zuweisung, z)
+        tbl_zuweisung.insert(z)
 
     for belem in elem.findall("BESCHLUSS"):
         b = pos_keys.copy()
@@ -128,27 +130,25 @@ def scrape_activity(engine, url, elem):
         b['dokument_text'] = belem.findtext("BEZUGSDOKUMENT")
         b['tenor'] = belem.findtext("BESCHLUSSTENOR")
         b['grundlage'] = belem.findtext("GRUNDLAGE")
-        sl.add_row(engine, Beschluss, b)
+        tbl_beschluss.insert(b)
 
     try:
         dokument = dokument_by_url(p['fundstelle_url']) or \
             dokument_by_name(p['fundstelle'])
         dokument.update(pos_keys)
-        sl.add_row(engine, Referenz, dokument)
+        tbl_referenz.insert(dokument)
     except Exception, e:
         log.exception(e)
 
-    sl.add_row(engine, Position, p)
     for belem in elem.findall("PERSOENLICHER_URHEBER"):
         b = pos_keys.copy()
         b['vorname'] = belem.findtext("VORNAME")
         b['nachname'] = belem.findtext("NACHNAME")
         b['funktion'] = belem.findtext("FUNKTION")
         b['ort'] = belem.findtext('WAHLKREISZUSATZ')
-        p = sl.find_one(engine, Person, 
-                vorname=b['vorname'],
-                nachname=b['nachname'],
-                ort=b['ort'])
+        p = tbl_person.find_one(vorname=b['vorname'],
+                                nachname=b['nachname'],
+                                ort=b['ort'])
         if p is not None:
             b['person_source_url'] = p['source_url']
         b['ressort'] = belem.findtext("RESSORT")
@@ -157,34 +157,34 @@ def scrape_activity(engine, url, elem):
                                          belem.findtext("FRAKTION"))
         b['seite'] = belem.findtext("SEITE")
         b['art'] = belem.findtext("AKTIVITAETSART")
-        sl.add_row(engine, Beitrag, b)
+        tbl_beitrag.insert(b)
 
 
-class NoContentException(Exception):
-    pass
-
-
-def scrape_ablauf(engine, url, force=False):
+def scrape_ablauf(url, force=False):
     key = int(url.rsplit('/', 1)[-1].split('.')[0])
-    a = sl.find_one(engine, Ablauf, source_url=url)
+
+    a = tbl_ablauf.find_one(source_url=url)
     if a is not None and a['abgeschlossen'] and not force:
-        raise Unmodified()
-    response = fetch(url)
-    a = check_tags(a or {}, response, force)
-    a.update({
+        log.info('Skipping: %r', url)
+        return
+
+    res = requests.get(url)
+    a = {
         'key': key,
         'source_url': url
-    })
-    doc = inline_xml_from_page(response.content, url)
+    }
+    doc = inline_xml_from_page(res.content, url)
     if doc is None:
-        raise NoContentException()
+        log.info('No content: %r', url)
+        return
 
     a['wahlperiode'] = int(doc.findtext("WAHLPERIODE"))
     a['typ'] = doc.findtext("VORGANGSTYP")
     a['titel'] = doc.findtext("TITEL")
 
     if not a['titel'] or not len(a['titel'].strip()):
-        raise NoContentException()
+        log.info('No title: %r', url)
+        return
 
     if '\n' in a['titel']:
         t, k = a['titel'].rsplit('\n', 1)
@@ -204,61 +204,64 @@ def scrape_ablauf(engine, url, force=False):
 
     for sw in doc.findall("SCHLAGWORT"):
         wort = {'wort': sw.text, 'source_url': url}
-        sl.upsert(engine, Schlagwort, wort, unique=wort.keys())
-    log.info("Ablauf %s: %s", url, a['titel'].encode('ascii', 'replace'))
+        tbl_schlagwort.upsert(wort, ['wort', 'source_url'])
+
+    log.info("Ablauf %s: %s", url, a['titel'])
     a['titel'] = a['titel'].strip().lstrip('.').strip()
     a['abgeschlossen'] = DIP_ABLAUF_STATES_FINISHED.get(a['stand'], False)
 
-    if a['wahlperiode'] != max(app.config.get('WAHLPERIODEN')):
+    if a['wahlperiode'] != max(WAHLPERIODEN):
         a['abgeschlossen'] = True
 
     if 'Originaltext der Frage(n):' in a['abstrakt']:
         _, a['abstrakt'] = a['abstrakt'].split('Originaltext der Frage(n):', 1)
 
-
-    sl.delete(engine, sl.get_table(engine, 'position'), source_url=url)
-    sl.delete(engine, sl.get_table(engine, 'beitrag'), source_url=url)
-    sl.delete(engine, sl.get_table(engine, 'zuweisung'), source_url=url)
-    sl.delete(engine, sl.get_table(engine, 'beschluss'), source_url=url)
-    sl.delete(engine, sl.get_table(engine, 'referenz'), source_url=url)
+    tbl_position.delete(source_url=url)
+    tbl_beitrag.delete(source_url=url)
+    tbl_zuweisung.delete(source_url=url)
+    tbl_beschluss.delete(source_url=url)
+    tbl_referenz.delete(source_url=url)
 
     for elem in doc.findall(".//VORGANGSPOSITION"):
-        scrape_activity(engine, url, elem)
+        scrape_activity(url, elem)
 
     for elem in doc.findall("WICHTIGE_DRUCKSACHE"):
         link = elem.findtext("DRS_LINK")
         hash = None
         if link is not None and '#' in link:
             link, hash = link.rsplit('#', 1)
-        dokument = dokument_by_id(elem.findtext("DRS_HERAUSGEBER"),
-                'drs', elem.findtext("DRS_NUMMER"), link=link)
+        dokument = dokument_by_id(elem.findtext("DRS_HERAUSGEBER"), 'drs',
+                                  elem.findtext("DRS_NUMMER"), link=link)
         dokument['text'] = elem.findtext("DRS_TYP")
         dokument['seiten'] = hash
         dokument['source_url'] = url
-        sl.upsert(engine, Referenz, dokument, unique=[
-            'link', 'source_url', 'seiten'
-            ])
+        tbl_referenz.upsert(dokument, ['link', 'source_url', 'seiten'])
 
     for elem in doc.findall("PLENUM"):
         link = elem.findtext("PLPR_LINK")
         if link is not None and '#' in link:
             link, hash = link.rsplit('#', 1)
-        dokument = dokument_by_id(elem.findtext("PLPR_HERAUSGEBER"),
-                'plpr', elem.findtext("PLPR_NUMMER"), link=link)
+        dokument = dokument_by_id(elem.findtext("PLPR_HERAUSGEBER"), 'plpr',
+                                  elem.findtext("PLPR_NUMMER"), link=link)
         dokument['text'] = elem.findtext("PLPR_KLARTEXT")
         dokument['seiten'] = elem.findtext("PLPR_SEITEN")
         dokument['source_url'] = url
-        sl.upsert(engine, Referenz, dokument, unique=[
-            'link', 'source_url', 'seiten'
-            ])
+        tbl_referenz.upsert(dokument, ['link', 'source_url', 'seiten'])
 
-    sl.upsert(engine, Ablauf, a, unique=['source_url'])
+    tbl_ablauf.upsert(a, ['source_url'])
     return a
 
 
 def scrape_index():
-    for wp in [17, 18]:
-        index_url = EXTRAKT_INDEX % wp
-        response, doc = _html(index_url, timeout=120.0)
-        for result in doc.findall("//a[@class='linkIntern']"):
-            yield urljoin(index_url, result.get('href'))
+    for wp in WAHLPERIODEN:
+        url = EXTRAKT_INDEX % wp
+        log.info("Loading WP index: %r", url)
+        res = requests.get(url)
+        doc = html.fromstring(res.content)
+        for result in doc.findall(".//a[@class='linkIntern']"):
+            aurl = urljoin(url, result.get('href'))
+            scrape_ablauf(aurl)
+
+
+if __name__ == '__main__':
+    scrape_index()
