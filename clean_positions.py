@@ -25,11 +25,10 @@ def extend_position(engine, table, data):
     data['fundstelle_doc'] = None
     if data['fundstelle_url'] and \
             'btp' in data['fundstelle_url']:
-        data['fundstelle_doc'] = data['fundstelle_url']\
-                .rsplit('#',1)[0]
+        data['fundstelle_doc'] = data['fundstelle_url'].rsplit('#', 1)[0]
 
     hash = sha1(data['fundstelle'].encode('utf-8') \
-            + data['urheber'].encode('utf-8') + \
+                + data['urheber'].encode('utf-8') + \
             data['source_url'].encode('utf-8')).hexdigest()
     data['hash'] = hash[:10]
     sl.upsert(engine, table, data, unique=['id'])
@@ -40,4 +39,3 @@ def extend_positions(engine, source_url):
     table = sl.get_table(engine, 'position')
     for data in sl.find(engine, table, source_url=source_url):
         extend_position(engine, table, data)
-
