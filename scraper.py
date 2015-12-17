@@ -1,6 +1,7 @@
 # -*- coding: UTF-8 -*-
 import logging
 import re
+import time
 import requests
 from lxml import etree, html
 from urlparse import urljoin
@@ -19,6 +20,15 @@ INLINE_COMMENTS_RE = re.compile(r"<-.*->", re.M + re.S)
 END_ID = re.compile("[,\n]")
 
 log = logging.getLogger(__name__)
+
+
+def requests_get(url):
+    for i in range(7):
+        try:
+            return requests.get(url, timeout=30)
+        except Exception, e:
+            log.exception(e)
+            time.sleep(2)
 
 
 def inline_xml_from_page(page, url):
@@ -168,7 +178,9 @@ def scrape_ablauf(url, force=False):
         log.info('Skipping: %r', url)
         return
 
-    res = requests.get(url)
+    res = requests_get(url)
+    if res is None:
+        return
     a = {
         'key': key,
         'source_url': url
@@ -256,7 +268,9 @@ def scrape_index():
     for wp in WAHLPERIODEN:
         url = EXTRAKT_INDEX % wp
         log.info("Loading WP index: %r", url)
-        res = requests.get(url)
+        res = requests_get(url)
+        if res is None:
+            return
         doc = html.fromstring(res.content)
         for result in doc.findall(".//a[@class='linkIntern']"):
             aurl = urljoin(url, result.get('href'))
